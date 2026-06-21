@@ -1,0 +1,11 @@
+Flask==3.0.3
+Flask-CORS==4.0.1
+gunicorn==22.0.0
+requests==2.32.3
+psycopg2-binary==2.9.9
+pinecone-client==5.0.1
+langchain==0.2.5
+langchain-core==0.2.9
+langchain-groq==0.1.5
+langgraph==0.0.69
+pypdf==4.2.0
