@@ -219,11 +219,11 @@ groq_model = ChatGroq(model="llama-3.3-70b-versatile")
 llm = create_react_agent(
     model=groq_model,
     tools=[load_tasks, ask_doc, update_task],
-    prompt=SYSTEM_PROMPT   # Pass prompt directly to prevent context-erasure drops
+       # Pass prompt directly to prevent context-erasure drops
 )
 
 conversation_history: list = []
-
+conversation_history.append(SystemMessage(content=SYSTEM_PROMPT))
 def _trim(messages: list) -> list:
     if not messages:
         return messages
