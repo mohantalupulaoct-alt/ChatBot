@@ -15,7 +15,7 @@ from langchain_groq import ChatGroq
 # CORRECT PATTERN: Import create_react_agent from langgraph.prebuilt
 from langgraph.prebuilt import create_react_agent
 
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
+import pypdf
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ── Web Server & Cloud Storage Configuration ──────────────────────────────────
@@ -76,19 +76,43 @@ def ask_doc(input_text: str) -> str:
 
     # Indexing Mode (Invoked if text points to a valid temporary file)
     if os.path.isfile(text):
-        loader = PyPDFLoader(text) if text.lower().endswith(".pdf") else TextLoader(text)
-        docs = loader.load()
-        chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200).split_documents(docs)
+        file_content = ""
         
-        texts_to_embed = [chunk.page_content for chunk in chunks]
-        embeddings = get_cloud_embeddings_batch(texts_to_embed)
+        # Native PDF parsing using standard pypdf library
+        if text.lower().endswith(".pdf"):
+            try:
+                reader = pypdf.PdfReader(text)
+                for page in reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        file_content += page_text + "\n"
+            except Exception as e:
+                return f"Error reading PDF file: {str(e)}"
+        
+        # Native Plain Text parsing
+        else:
+            try:
+                with open(text, "r", encoding="utf-8", errors="ignore") as f:
+                    file_content = f.read()
+            except Exception as e:
+                return f"Error reading text file: {str(e)}"
+
+        if not file_content.strip():
+            return "Document processing failed: No extractable text found."
+
+        # Split the raw string directly using split_text
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = splitter.split_text(file_content)
+        
+        # Request all embeddings in a single swift roundtrip
+        embeddings = get_cloud_embeddings_batch(chunks)
         
         vectors_to_upsert = []
-        for i, chunk in enumerate(chunks):
+        for i, chunk_text in enumerate(chunks):
             vectors_to_upsert.append({
                 "id": f"chunk_{i}_{os.path.basename(text)}",
                 "values": embeddings[i],
-                "metadata": {"text": chunk.page_content}
+                "metadata": {"text": chunk_text}
             })
             
         index.upsert(vectors=vectors_to_upsert)
@@ -108,6 +132,7 @@ def ask_doc(input_text: str) -> str:
     if results and results.get("matches"):
         return results["matches"][0]["metadata"]["text"][:600]
     return "Nothing found in document."
+
 
 @tool
 def load_tasks() -> str:
