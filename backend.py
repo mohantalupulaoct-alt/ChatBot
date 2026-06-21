@@ -249,10 +249,28 @@ def run_with_guardrails(user_text: str) -> str:
 # =============================================================================
 # API API ENDPOINTS / ROUTING
 # =============================================================================
+
+    # ── REPLACE THIS OLD CODE ────────────────────────────────────────────────────
+# @app.route('/')
+# def home_page():
+#     """Serves the frontend interface template directly."""
+#     return render_template('frontend.html')
+
+# ── ADD THIS BULLETPROOF VERSION INSTEAD ─────────────────────────────────────
 @app.route('/')
 def home_page():
-    """Serves the frontend interface template directly."""
-    return render_template('frontend.html')
+    """Locates and serves frontend.html directly from anywhere in the repo."""
+    # Checks the root folder first, then the templates sub-folder
+    possible_paths = ['frontend.html', 'templates/frontend.html']
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                # Returning raw string content automatically sets the type to text/html
+                return f.read()
+                
+    return "Error: frontend.html could not be located in the repository root or templates folder.", 404
+    
 
 @app.route('/upload', methods=['POST'])
 def upload():
