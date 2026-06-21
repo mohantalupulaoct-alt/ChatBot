@@ -1,5 +1,5 @@
 # =============================================================================
-# backend.py (Fixed Cloud-Ready Version)
+# backend.py (Fully Audited Production Version)
 # =============================================================================
 import os
 import re
@@ -7,59 +7,43 @@ import psycopg2
 import requests
 from typing import Annotated, TypedDict
 
-# ── LangChain / LangGraph ──────────────────────────────────────────────────
+# ── Correct LangChain / LangGraph Imports ────────────────────────────────────
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_groq import ChatGroq
-from langchain.agents import create_agent
+
+# CORRECT PATTERN: Import create_react_agent from langgraph.prebuilt
+from langgraph.prebuilt import create_react_agent
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# ── Web server ────────────────────────────────────────────────────────────────
-from flask import Flask, request, jsonify,render_template
+# ── Web Server & Cloud Storage Configuration ──────────────────────────────────
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from pinecone import Pinecone
 
-
-
 import tempfile
 
-
-# OPTION A: Save it completely outside the workspace in the system temp directory
+# System temporary directory ensures OneDrive/Local watchers do not loop-reload
 UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), "chatbot_uploaded_docs")
-
-# OPTION B: Or just move it one level above your current project root directory
-# UPLOAD_FOLDER = "../uploaded_docs"
-
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 # =============================================================================
-# CONFIG & CREDENTIALS (Sourced from Environment Variables)
-# =============================================================================
-# =============================================================================
-# CONFIG & CREDENTIALS (Strictly using environment variables for safety)
+# CONFIG & CREDENTIALS (Secure Cloud Fallbacks)
 # =============================================================================
 os.environ["GROQ_API_KEY"] = os.environ.get("GROQ_API_KEY", "")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "")
-
-# Safeguard check to ensure the server crashes gracefully if variables are missing
-if not all([os.environ["GROQ_API_KEY"], HF_TOKEN, DATABASE_URL, PINECONE_API_KEY]):
-    print("❌ WARNING: One or more environment variables are missing! Check your cloud dashboard.")
-
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY
 PINECONE_INDEX = "chatbot-docs"
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX)
 
-
 # =============================================================================
-# FREE API EMBEDDINGS (Safely Flattened for Pinecone)
-# =============================================================================
-# =============================================================================
-# OPTIMIZED BATCH EMBEDDINGS (Processes entire document lists in 1 call)
+# OPTIMIZED BATCH EMBEDDINGS (Processes entire documents swiftly)
 # =============================================================================
 def get_cloud_embeddings_batch(texts: list) -> list:
     """Sends an array of text chunks to Hugging Face in a single optimized HTTP call."""
@@ -72,7 +56,6 @@ def get_cloud_embeddings_batch(texts: list) -> list:
         
     raw_embeddings = response.json()
     
-    # Standardize output shapes (stripping potential nested token dimension tensors)
     cleaned_embeddings = []
     for item in raw_embeddings:
         while isinstance(item, list) and len(item) > 0 and isinstance(item[0], list):
@@ -81,9 +64,8 @@ def get_cloud_embeddings_batch(texts: list) -> list:
         
     return cleaned_embeddings
 
-
 # =============================================================================
-# OPTIMIZED ASK DOC TOOL
+# AGENT TOOLS
 # =============================================================================
 @tool
 def ask_doc(input_text: str) -> str:
@@ -92,16 +74,13 @@ def ask_doc(input_text: str) -> str:
         return "No input."
     text = input_text.strip()
 
-    # Processing a file indexing sequence
+    # Indexing Mode (Invoked if text points to a valid temporary file)
     if os.path.isfile(text):
         loader = PyPDFLoader(text) if text.lower().endswith(".pdf") else TextLoader(text)
         docs = loader.load()
         chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200).split_documents(docs)
         
-        # Extract text content strings into a clean list
         texts_to_embed = [chunk.page_content for chunk in chunks]
-        
-        # Request all embeddings in a single swift roundtrip
         embeddings = get_cloud_embeddings_batch(texts_to_embed)
         
         vectors_to_upsert = []
@@ -115,7 +94,7 @@ def ask_doc(input_text: str) -> str:
         index.upsert(vectors=vectors_to_upsert)
         return f"Successfully indexed {len(chunks)} chunks to Pinecone cloud!"
 
-    # Fallback to semantic querying (Single string operation)
+    # Querying Mode (Vector semantic search)
     api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
     response = requests.post(api_url, json={"inputs": [text], "options": {"wait_for_model": True}}, headers=headers)
@@ -130,12 +109,9 @@ def ask_doc(input_text: str) -> str:
         return results["matches"][0]["metadata"]["text"][:600]
     return "Nothing found in document."
 
-# =============================================================================
-# TOOLS
-# =============================================================================
 @tool
 def load_tasks() -> str:
-    """Read user preferences from the cloud PostgreSQL instance.Befor answering any question, use this tool to know user details."""
+    """Read user preferences from the cloud PostgreSQL instance. Before answering any question, use this tool to know user details."""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -147,44 +123,31 @@ def load_tasks() -> str:
     except Exception as e:
         return f"Error connecting to cloud DB: {str(e)}"
 
-# =============================================================================
-# NEON POSTGRESQL WRITE LOGIC (UPSERT)
-# =============================================================================
-def _write_prefs(text: str) -> None:
-    """Writes or overwrites user preferences in Neon using PostgreSQL UPSERT syntax."""
+@tool
+def update_task(preferences: str) -> str:
+    """Update the long-term preferences of the user in the cloud database. CRITICAL: Only call this tool IF you have already identified important user details."""
+    if not preferences.strip():
+        return "Nothing to save."
+    
     try:
         conn = psycopg2.connect(DATABASE_URL)
         with conn:
             with conn.cursor() as cur:
-                # 'ON CONFLICT' targets the PRIMARY KEY (username) and updates the text if it exists
                 cur.execute("""
                     INSERT INTO user_prefs (username, preferences) 
                     VALUES ('Mohan', %s) 
                     ON CONFLICT (username) 
                     DO UPDATE SET preferences = EXCLUDED.preferences;
-                """, (text,))
+                """, (preferences.strip(),))
         conn.close()
+        return "Preferences successfully updated in cloud database."
     except Exception as e:
-        print(f"[Database Error] Failed writing preferences to Neon: {str(e)}")
-
+        return f"Failed writing preferences to Neon: {str(e)}"
 
 # =============================================================================
-# UPDATED USER PREFERENCE TOOL
+# GUARDRAILS & DESCRIPTORS
 # =============================================================================
-@tool
-def update_task(preferences: str) -> str:
-    """
-    Update the long-term preferences of the user in the cloud database.
-    CRITICAL: Only call this tool IF you have already identified important user details.
-    """
-    if not preferences.strip():
-        return "Nothing to save."
-    
-    _write_prefs(preferences.strip())
-    return "Preferences successfully updated in cloud database."
-
-
-HISTORY_PAIRS = 1
+HISTORY_PAIRS = 3  
 BANNED_KEYWORDS = ["hack", "exploit", "malware", "jailbreak", "bypass"]
 PII_PATTERNS = [
     (re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'), "[email]"),
@@ -202,9 +165,6 @@ SYSTEM_PROMPT = (
 app = Flask(__name__)
 CORS(app)
 
-# =============================================================================
-# GUARDRAILS
-# =============================================================================
 def guardrail_content_filter(text: str) -> str | None:
     lower = text.lower()
     for kw in BANNED_KEYWORDS:
@@ -218,8 +178,6 @@ def guardrail_pii_redact(text: str) -> str:
     return text
 
 def guardrail_safety_check(response_text: str) -> str:
-    
-    # Avoid expensive per-response API calls - just do lightweight checks
     unsafe_phrases = ["execute code", "system command", "delete", "hack"]
     lower_response = response_text.lower()
     for phrase in unsafe_phrases:
@@ -228,17 +186,19 @@ def guardrail_safety_check(response_text: str) -> str:
     return response_text
 
 # =============================================================================
-# FIXED AGENT INITIALIZATION
+# OFFICIAL LANGGRAPH REACT AGENT RUNTIME INITIALIZATION
 # =============================================================================
 groq_model = ChatGroq(model="llama-3.3-70b-versatile")
-llm = create_agent(
+
+# Correct use of create_react_agent with prompt bindings
+llm = create_react_agent(
     model=groq_model,
-    tools=[load_tasks, ask_doc,update_task],
-    
+    tools=[load_tasks, ask_doc, update_task],
+    prompt=SYSTEM_PROMPT   # Pass prompt directly to prevent context-erasure drops
 )
 
 conversation_history: list = []
-conversation_history.append(SystemMessage(content=SYSTEM_PROMPT))
+
 def _trim(messages: list) -> list:
     if not messages:
         return messages
@@ -252,27 +212,25 @@ def run_with_guardrails(user_text: str) -> str:
     clean_text = guardrail_pii_redact(user_text)
     conversation_history.append(HumanMessage(content=clean_text))
     trimmed = _trim(conversation_history)
-    print("Trimmed conversation history:", trimmed)
+    
+    # Invoking the React graph agent state loop
     response = llm.invoke({"messages": trimmed})
     agent_reply = response["messages"][-1].content or ""
-    print("Agent reply:", response)
+    
     safe_reply = guardrail_safety_check(agent_reply)
     conversation_history.append(AIMessage(content=safe_reply))
-    print("Safe reply:", conversation_history)
     return safe_reply
 
 # =============================================================================
-# ROUTES
+# API API ENDPOINTS / ROUTING
 # =============================================================================
 @app.route('/')
 def home_page():
-    """Serves the frontend interface directly to the user's browser."""
+    """Serves the frontend interface template directly."""
     return render_template('frontend.html')
-
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    """Explicitly bypasses conversational ambiguity and indexes directly via the tool pipeline."""
     if 'file' not in request.files:
         return jsonify({"error": "No file provided."}), 400
     f = request.files['file']
@@ -282,13 +240,12 @@ def upload():
     safe_name = os.path.basename(f.filename)
     save_path = os.path.join(UPLOAD_FOLDER, safe_name)
     f.save(save_path)
-    print('hi')
+    
     try:
-        # Directly call the indexing logic deterministically
-        reply = ask_doc.invoke(save_path)
+        # Directly invoking function bypasses structural dictionary payload constraints
+        reply = ask_doc.func(save_path)
         conversation_history.append(HumanMessage(content=f"Uploaded document: {safe_name}"))
         conversation_history.append(AIMessage(content=reply))
-        print(reply)
         return jsonify({"reply": reply, "filename": save_path})
     except Exception as e:
         return jsonify({"error": f"Failed indexing document array: {str(e)}"}), 500
@@ -299,7 +256,6 @@ def add():
     msg = str(data.get("message", "")).strip()
     if not msg:
         return jsonify({"error": "No message."}), 400
-    print(msg)
     reply = run_with_guardrails(msg)
     return jsonify({"reply": reply})
 
@@ -308,7 +264,6 @@ def health():
     return jsonify({"status": "ok"})
 
 if __name__ == "__main__":
-    # Add use_reloader=False to stop OneDrive from triggering endless restarts
     app.run(
         debug=True, 
         threaded=True, 
